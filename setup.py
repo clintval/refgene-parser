@@ -1,11 +1,8 @@
 import setuptools
 
-from packagename.version import Version
-
-
 setuptools.setup(
     name='refgene_parser',
-    version=Version('1.0.0').number,
+    version='0.0.1',
     description='Python parser to RefGene files',
     long_description=open('README.md').read().strip(),
     author='clintval',
