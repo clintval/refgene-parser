@@ -2,16 +2,13 @@
 
 <h3 align="center">Installation</h3>
 
-Clone the respository and then install locally:
-
 ```bash
-$ git clone https://github.com/clintval/refgene-parser.git
 $ pip install refgene-parser
 ```
 
 <h3 align="center">Dependencies</h3>
 
-- None
+<p align="center">None</p>
 
 <h3 align="center">Tutorial</h3>
 
@@ -19,7 +16,7 @@ Iterate over the records in a RefGene file:
 
 ```python
 
-from refgene import RefGene
+from refgene_parser import RefGene
 
 refgene = RefGene('mm10.refGene.txt.gz')
 
