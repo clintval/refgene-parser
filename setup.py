@@ -9,7 +9,7 @@ setuptools.setup(
     author='clintval',
     author_email='valentine.clint@gmail.com',
     url='https://github.com/clintval/refgene-parser',
-    download_url='https://github.com/clintval/regene-parser/archive/0.0.1.tar.gz',  # noqa
+    download_url='https://github.com/clintval/refgene-parser/archive/0.0.1.tar.gz',  # noqa
     py_modules=['refgene_parser'],
     install_requires=[],
     license='MIT License',
