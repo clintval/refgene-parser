@@ -1,15 +1,10 @@
-import csv
-import gzip
-import io
 import re
 
-from pathlib import Path
+from smart_open import smart_open
 
 __all__ = [
     'Interval',
-    'Exon',
-    'Gene',
-    'RefGene'
+    'RefGene',
 ]
 
 
@@ -20,11 +15,14 @@ class Interval(object):
         start,
         end,
         strand='.',
-        name=None,
+        name='.',
+        score=500,
         **metadata
     ):
         assert isinstance(start, int), 'Loci must be integers'
         assert isinstance(end, int), 'Loci must be integers'
+        assert isinstance(name, str), 'Name must be a string'
+        assert isinstance(score, (int, float)), 'Score must be a number'
         assert end - start > 0, 'Exclusive end must be greater than start'
         assert strand in ('.', '+', '-'), 'Strand must be ".", "+", "-" only'
 
@@ -33,11 +31,22 @@ class Interval(object):
         self.end = end
         self.strand = strand
         self.name = name
+        self.score = score
         self.metadata = metadata
 
     @property
-    def sam_interval(self):
+    def SAM_interval(self):
         return f'{self.chrom}:{self.start}-{self.end}'
+
+    @property
+    def BED_interval(self):
+        return '\t'.join(map(str, [
+            self.chrom,
+            self.start,
+            self.end,
+            self.name or '.',
+            self.score,
+            self.strand]))
 
     def get(self, item, default=None):
         temp = self.__dict__.copy()
@@ -81,7 +90,7 @@ class Interval(object):
 
     def __repr__(self):
         return (
-            'Interval('
+            f'{self.__class__.__name__}('
             f'"{self.chrom}", '
             f'{self.start}, '
             f'{self.end}, '
@@ -89,6 +98,46 @@ class Interval(object):
 
     def __str__(self):
         return self.__repr__()
+
+
+class AminoRegion(Interval):
+    def __init__(
+        self,
+        chrom,
+        start,
+        end,
+        strand='.',
+        name='.',
+        score=500,
+        **metadata
+    ):
+        super().__init__(
+            chrom,
+            start,
+            end,
+            strand=strand,
+            name=name,
+            metadata=metadata)
+
+
+class CodingRegion(Interval):
+    def __init__(
+        self,
+        chrom,
+        start,
+        end,
+        strand='.',
+        name='.',
+        score=500,
+        **metadata
+    ):
+        super().__init__(
+            chrom,
+            start,
+            end,
+            strand=strand,
+            name=name,
+            metadata=metadata)
 
 
 class Exon(Interval):
@@ -100,7 +149,7 @@ class Exon(Interval):
         strand='.',
         rank=None,
         frame_offset=-1,
-        name=None,
+        name='.',
         **metadata
     ):
         super().__init__(
@@ -126,16 +175,12 @@ class Exon(Interval):
         self.frame_offset = None if frame_offset == -1 else frame_offset
 
     @property
-    def in_frame(self):
-        return self.frame_offset == 0
-
-    @property
-    def has_frame(self):
-        return self.frame_offset is not None
+    def is_UTR(self):
+        return self.frame_offset is None
 
     def __repr__(self):
         return (
-            'Exon('
+            f'{self.__class__.__name__}('
             f'"{self.chrom}", '
             f'{self.start}, '
             f'{self.end}, '
@@ -144,15 +189,15 @@ class Exon(Interval):
             f'frame_offset={self.frame_offset})')
 
 
-class Gene(Interval):
+class Transcript(Interval):
     def __init__(
         self,
         chrom,
         start,
         end,
         strand='.',
-        name=None,
-        id=None,
+        name='.',
+        accession=None,
         coding_start=None,
         coding_end=None,
         score=None,
@@ -168,7 +213,7 @@ class Gene(Interval):
             name=name,
             metadata=metadata)
 
-        self.id = id
+        self.accession = accession
         self.transcript_start = start
         self.transcript_stop = end
         self.coding_start = coding_start
@@ -190,36 +235,74 @@ class Gene(Interval):
     def exons(self):
         return sorted(self._exons)
 
+    @property
+    def coding_intervals(self):
+        intervals = []
+        for exon in self.exons:
+            if (
+                exon.is_UTR or
+                self.coding_start > exon.end or
+                self.coding_end < exon.start
+            ):
+                continue
+
+            if self.coding_start in range(exon.start, exon.end + 1):
+                start = self.coding_start
+                end = exon.end
+            elif self.coding_end in range(exon.start, exon.end + 1):
+                start = exon.start
+                end = self.coding_end
+            else:
+                start = exon.start
+                end = exon.end
+
+            cds = CodingRegion(
+                chrom=exon.chrom,
+                start=start,
+                end=end,
+                strand=exon.strand)
+
+            cds.exon = exon
+            cds.transcript = self
+
+            intervals.append(cds)
+
+        return intervals
+
+    @property
+    def coding_length(self):
+        return sum(len(cds) for cds in self.coding_intervals)
+
     def __repr__(self):
         return (
-            'Gene('
+            f'{self.__class__.__name__}('
             f'"{self.chrom}", '
             f'{self.start}, '
             f'{self.end}, '
             f'"{self.strand}", '
             f'name="{self.name}", '
-            f'id="{self.id}")')
+            f'accession="{self.accession}")')
 
 
 class RefGene(object):
     def __init__(self, path):
-        self.path = Path(path)
-        assert self.path.exists(), f'File does not exist {self.path}'
+        self.path = path
+        self._handle = None
 
     @staticmethod
-    def _line_to_gene(line):
-        (_, name, chrom, strand, transcript_start, transcript_stop,
+    def _line_to_transcript(line):
+        (_, accession, chrom, strand, transcript_start, transcript_stop,
          coding_start, coding_end, num_exons, exon_starts, exon_ends,
          score, alt_name, coding_start_status, coding_end_status,
          exon_frames) = line
 
-        gene = Gene(
+        transcript = Transcript(
             chrom,
             int(transcript_start),
             int(transcript_stop),
             strand,
             name=alt_name,
-            id=name,
+            accession=accession,
             coding_start=int(coding_start),
             coding_end=int(coding_end),
             score=score,
@@ -249,43 +332,33 @@ class RefGene(object):
                 rank=rank,
                 frame_offset=int(frame_offset))
 
-            gene._exons.append(exon)
+            exon.transcript = transcript
 
-        return gene
+            transcript._exons.append(exon)
 
-    def gene_by_id(self, id):
-        for gene in self:
-            if gene.id == id:
-                return gene
+        return transcript
 
-    def genes_by_id_pattern(self, id, flags=re.IGNORECASE):
-        pattern = re.compile(id, flags)
+    def transcript_by_accession(self, accession, flags=re.IGNORECASE):
+        pattern = re.compile(accession, flags)
 
-        for gene in self:
-            if pattern.match(gene.id):
-                yield gene
+        for transcript in self:
+            if pattern.match(transcript.accession):
+                yield transcript
 
-    def gene_by_name(self, name):
-        for gene in self:
-            if gene.name == name:
-                return gene
-
-    def genes_by_name_pattern(self, name, flags=re.IGNORECASE):
+    def transcript_by_name(self, name, flags=re.IGNORECASE):
         pattern = re.compile(name, flags)
 
-        for gene in self:
-            if pattern.match(gene.name):
-                yield gene
+        for transcript in self:
+            if pattern.match(transcript.name):
+                yield transcript
 
     def __iter__(self):
-        handle = gzip.open(self.path, 'rb')
-        self._reader = csv.reader(
-            io.TextIOWrapper(handle),
-            delimiter='\t')
+        self._handle = smart_open(str(self.path))
         return self
 
     def __next__(self):
-        return self._line_to_gene(next(self._reader))
+        line = next(self._handle).decode('utf-8').strip().split('\t')
+        return self._line_to_transcript(line)
 
     def __repr__(self):
         return f'RefSeq("{self.path}")'
